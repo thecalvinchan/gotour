@@ -2,7 +2,12 @@ package main
 
 import (
 	"fmt"
+	"log"
+	"os"
+	"sync"
 )
+
+var mod_fmt = log.New(os.Stdout, "", 0)
 
 type Fetcher interface {
 	// Fetch returns the body of URL and
@@ -18,35 +23,41 @@ type Page struct {
 // Crawl uses fetcher to recursively crawl
 // pages starting with url, to a maximum of depth.
 func Crawl(url string, depth int, fetcher Fetcher) {
-	// TODO: Fetch URLs in parallel.
-	// TODO: Don't fetch the same URL twice.
-	// This implementation doesn't do either:
-	ch := make(chan Page)
+	ch := make(chan *map[string]bool)
 	m := make(map[string]bool)
-	m[url] = true
-	go Fetch(Page{url, depth}, ch)
-	for p := range ch {
-		_, exists := m[p.url]
-		if !exists {
-			go Fetch(p, ch)
-			m[p.url] = true
+	var wg sync.WaitGroup
+	var Fetch func(url string, depth int)
+	Fetch = func(url string, depth int) {
+		defer func() {
+			ch <- &m
+			wg.Done()
+		}()
+
+		if depth <= 0 {
+			return
+		}
+		m := <-ch
+		_, exists := (*m)[url]
+		if exists {
+			return
+		}
+		body, urls, err := fetcher.Fetch(url)
+		(*m)[url] = true
+		if err != nil {
+			mod_fmt.Println(err)
+			return
+		}
+		mod_fmt.Printf("found: %s %q\n", url, body)
+		for _, u := range urls {
+			wg.Add(1)
+			go Fetch(u, depth-1)
 		}
 	}
-}
 
-func Fetch(url Page, ch chan Page) {
-	if url.depth <= 0 {
-		return
-	}
-	body, urls, err := fetcher.Fetch(url.url)
-	if err != nil {
-		fmt.Println(err)
-		return
-	}
-	fmt.Printf("found: %s %q\n", url.url, body)
-	for _, u := range urls {
-		ch <- Page{u, url.depth - 1}
-	}
+	go Fetch(url, depth)
+	ch <- &m
+
+	wg.Wait()
 }
 
 func main() {
